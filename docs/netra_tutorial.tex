@@ -1,0 +1,117 @@
+\documentclass[11pt,a4paper]{report}
+\usepackage[T1]{fontenc}
+\usepackage{mathpazo}
+\usepackage[scaled=.92]{helvet}
+\usepackage{courier}
+\usepackage[a4paper,margin=2.4cm]{geometry}
+\usepackage{microtype,xcolor,graphicx,booktabs,array,enumitem,amsmath,amssymb}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta,shapes.geometric,fit,calc,backgrounds}
+\usepackage[most]{tcolorbox}
+\usepackage{listings}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{caption}
+\usepackage[colorlinks=true,linkcolor=ink,urlcolor=teal,citecolor=ink]{hyperref}
+
+% ---------- editable metadata ----------
+\newcommand{\authorname}{Tulja}
+\newcommand{\repourl}{https://github.com/<tuljayerram>/netra-ai}
+
+% ---------- colours ----------
+\definecolor{ink}{HTML}{0B3C5D}
+\definecolor{teal}{HTML}{1B7F79}
+\definecolor{saffron}{HTML}{D9822B}
+\definecolor{paper}{HTML}{F5F7F9}
+\definecolor{codegray}{HTML}{6B7785}
+
+% ---------- helpers ----------
+\usepackage{url}
+\urlstyle{tt}
+\def\UrlBreaks{\do\/\do\_\do\.\do\-\do\=\do\(\do\)\do\,\do\:}
+\DeclareRobustCommand{\code}[1]{\path{#1}}
+\setlist{itemsep=2pt,topsep=4pt}
+\setlength{\parskip}{4pt}
+\setlength{\parindent}{0pt}
+\captionsetup{font=small,labelfont={bf,color=ink}}
+
+\titleformat{\chapter}[hang]{\normalfont\huge\bfseries\color{ink}}{\thechapter}{16pt}{}[\vspace{2pt}\color{saffron}\titlerule]
+\titleformat{\section}{\normalfont\Large\bfseries\color{ink}}{\thesection}{10pt}{}
+\titleformat{\subsection}{\normalfont\large\bfseries\color{teal}}{\thesubsection}{8pt}{}
+\titlespacing*{\chapter}{0pt}{-10pt}{18pt}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\color{codegray}NetraAI tutorial}
+\fancyhead[R]{\small\color{codegray}\leftmark}
+\fancyfoot[C]{\small\thepage}
+\renewcommand{\headrulewidth}{0.3pt}
+
+% ---------- boxes ----------
+\newtcolorbox{notebox}[1][Note]{enhanced,breakable,colback=teal!6,colframe=teal,
+  fonttitle=\bfseries,title={#1},boxrule=0.6pt,arc=2pt,left=6pt,right=6pt}
+\newtcolorbox{warnbox}[1][Caution]{enhanced,breakable,colback=saffron!10,colframe=saffron,
+  fonttitle=\bfseries,title={#1},boxrule=0.6pt,arc=2pt,left=6pt,right=6pt}
+\newtcolorbox{safetybox}[1][Safety statement]{enhanced,breakable,colback=red!5,colframe=red!60!black,
+  fonttitle=\bfseries,title={#1},boxrule=0.8pt,arc=2pt,left=6pt,right=6pt}
+
+% ---------- listings ----------
+\lstdefinestyle{base}{basicstyle=\ttfamily\footnotesize,breaklines=true,breakatwhitespace=false,
+  columns=fullflexible,keepspaces=true,showstringspaces=false,frame=single,rulecolor=\color{ink!35},
+  backgroundcolor=\color{paper},xleftmargin=2pt,xrightmargin=2pt,aboveskip=8pt,belowskip=6pt,
+  keywordstyle=\bfseries\color{ink},commentstyle=\itshape\color{codegray},stringstyle=\color{teal},
+  captionpos=b,literate={~}{{\textasciitilde}}1}
+\lstdefinestyle{py}{style=base,language=Python,numbers=left,numberstyle=\tiny\color{codegray},numbersep=6pt}
+\lstdefinestyle{sh}{style=base,language=bash,morekeywords={sudo,apt,git,pip,python,ollama,curl,source,mkdir,cd,touch,wsl,usbipd,streamlit,pytest}}
+\lstdefinestyle{plain}{style=base}
+
+\emergencystretch=4em
+\begin{document}
+
+% ================= TITLE PAGE =================
+\begin{titlepage}
+\begin{tikzpicture}[remember picture,overlay]
+  \fill[ink] (current page.north west) rectangle ([yshift=-9.2cm]current page.north east);
+  \fill[saffron] ([yshift=-9.2cm]current page.north west) rectangle ([yshift=-9.45cm]current page.north east);
+  % stylised eye
+  \begin{scope}[shift={([xshift=-4cm,yshift=-4.6cm]current page.north east)}]
+    \draw[white,line width=1.6pt] (-1.5,0) .. controls (-0.7,1.0) and (0.7,1.0) .. (1.5,0)
+                                   .. controls (0.7,-1.0) and (-0.7,-1.0) .. (-1.5,0);
+    \fill[saffron] (0,0) circle (0.42);
+    \fill[white] (0.12,0.12) circle (0.1);
+  \end{scope}
+\end{tikzpicture}
+\vspace*{1.2cm}
+{\color{white}\Huge\bfseries NetraAI\par}
+\vspace{6pt}
+{\color{white}\Large An Intelligent Image and Video Processing Agent\\ for Assistive Vision\par}
+\vspace{2.4cm}
+{\Large\bfseries\color{ink} A detailed, command-by-command tutorial\\ using free and open-source tools on Ubuntu (WSL2)\par}
+\vspace{1cm}
+{\large Local LLM tool calling $\cdot$ OpenCV $\cdot$ YOLO $\cdot$ OCR $\cdot$ speech $\cdot$ edge deployment\par}
+\vfill
+{\large\authorname\par}
+{\normalsize Technical tutorial \quad $\cdot$ \quad November 2026\par}
+{\small Companion code: \url{\repourl}\par}
+\end{titlepage}
+
+\begin{abstract}
+\noindent This tutorial shows how to design, install, program, test and publish a locally running AI agent
+for image and video processing in an \emph{assistive-vision} setting: a camera worn by, or carried with, a
+person with visual impairment, and software that turns frames into short spoken information.
+A local large language model (LLM) served by Ollama interprets natural-language instructions and selects tools
+from a fixed allow-list. Established libraries perform the numerical work: OpenCV and scikit-image for enhancement,
+filtering and metrics; a small YOLO detector for objects; Tesseract for printed text; espeak-ng for speech.
+The tutorial covers WSL2/Ubuntu setup, the tool library, a bounded agent loop, a left/center/right and proximity
+guidance layer, controlled experiments, evaluation metrics, a Streamlit interface, edge-deployment considerations for
+a Raspberry Pi-class device, safety and privacy practice, and step-by-step publication to GitHub. All code
+is in the companion repository and is included in this document by reference, so the text and the code cannot drift apart.
+\end{abstract}
+
+\tableofcontents
+
+\input{chapters/part1}
+\input{chapters/part2}
+\input{chapters/part3}
+
+\end{document}

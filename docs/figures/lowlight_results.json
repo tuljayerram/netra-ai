@@ -1,0 +1,22 @@
+{
+  "Dark input": {
+    "PSNR_dB": 13.052,
+    "SSIM": 0.6245,
+    "mean_intensity": 65.65
+  },
+  "CLAHE only (gamma 1.0)": {
+    "PSNR_dB": 16.043,
+    "SSIM": 0.56,
+    "mean_intensity": 86.71
+  },
+  "CLAHE + gamma 1.8": {
+    "PSNR_dB": 20.884,
+    "SSIM": 0.6607,
+    "mean_intensity": 121.73
+  },
+  "CLAHE + gamma 2.2": {
+    "PSNR_dB": 19.105,
+    "SSIM": 0.6675,
+    "mean_intensity": 133.6
+  }
+}

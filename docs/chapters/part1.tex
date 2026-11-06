@@ -1,0 +1,310 @@
+% =====================================================================
+\chapter{Introduction}
+% =====================================================================
+
+\section{What is an assistive-vision agent?}
+An \emph{image and video processing (IVP) agent} accepts a request in natural language, decides which
+computer-vision operation fits, runs it, checks the result and reports what it did. For an assistive-vision project the
+camera is the sensor and the user is a person who cannot rely on sight alone. Typical needs are:
+knowing what is in front of them and roughly where, reading printed labels, and getting information in a form they can
+use immediately, which usually means speech rather than a picture.
+
+The language model is the \emph{coordinator}, not the vision engine. It never touches pixels. It reads the request,
+picks a function such as \code{enhance_low_light} or \code{detect_objects}, and explains the result. OpenCV,
+scikit-image, YOLO, Tesseract and espeak-ng do the actual computation, and their outputs are deterministic and measurable.
+
+\section{Why this domain}
+Assistive vision is a good teaching domain because it forces engineering trade-offs that generic image-processing
+exercises hide.
+\begin{itemize}
+  \item \textbf{Latency matters.} A description that arrives three seconds late may describe a scene the user has already left.
+  \item \textbf{Bad input is normal.} A camera on a moving head sees motion blur, low light, glare and awkward angles. Image-quality assessment and enhancement are part of the pipeline, not an optional extra.
+  \item \textbf{Errors have asymmetric cost.} Missing a hazard is worse than a false alarm, but too many false alarms make a user stop listening. This is why evaluation here goes beyond accuracy.
+  \item \textbf{Edge constraints are real.} The final device is typically a small single-board computer with limited memory, so model size, input resolution and frame rate become design variables.
+  \item \textbf{Privacy is not optional.} A wearable camera records bystanders. Local processing keeps frames on the device.
+\end{itemize}
+
+\begin{safetybox}
+NetraAI is a research and teaching prototype. It is \textbf{not} a certified mobility or safety device. It must not
+replace a white cane, a guide dog or orientation-and-mobility training. Detections are estimates; the system never
+announces that a path is ``clear'', only which known objects it detected. Any evaluation with visually impaired
+participants needs ethical approval, informed consent and involvement of qualified mobility instructors.
+\end{safetybox}
+
+\section{Example requests}
+The finished agent should handle requests such as:
+\begin{itemize}
+  \item ``Is \code{hallway.png} too dark? If so, enhance it and tell me what you changed.''
+  \item ``Detect objects in \code{street.png} and tell me where the closest one is.''
+  \item ``Read the text on \code{medicine_box.png} in English and Telugu.''
+  \item ``Extract one frame every two seconds from \code{walk.mp4}.''
+  \item ``Darken \code{astronaut.png}, enhance it, and compare PSNR and SSIM against the original.''
+  \item ``Analyse \code{crossing.mp4} every half second and save a guidance timeline.''
+  \item ``Run the full navigation pipeline on \code{corridor.png} and give me the audio file.''
+\end{itemize}
+
+\section{Architecture}
+Figure~\ref{fig:arch} separates five responsibilities: interaction, reasoning, controlled tool execution, deterministic
+vision processing, and presentation. The controller is the trust boundary. The model proposes; the controller validates and executes.
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[node distance=6.5mm,
+  box/.style={draw=ink,rounded corners=2pt,fill=ink!6,align=center,font=\small,minimum height=9mm},
+  tool/.style={draw=teal,rounded corners=2pt,fill=teal!8,align=center,font=\footnotesize,minimum height=11mm,minimum width=2.9cm},
+  arr/.style={-{Latex[length=2mm]},thick,ink}]
+\node[box,minimum width=7.2cm] (user) {User, browser, or camera frames};
+\node[box,minimum width=7.2cm,below=of user] (ctrl) {\textbf{Agent controller}\\ allow-list $\cdot$ argument validation $\cdot$ round limit $\cdot$ logging};
+\node[box,minimum width=5.4cm,right=12mm of ctrl,fill=saffron!12,draw=saffron] (llm) {\textbf{Local LLM (Ollama)}\\ interprets request, selects tool};
+\node[tool,below=9mm of ctrl,xshift=-6.6cm] (t1) {Image tools\\ quality, CLAHE, filters};
+\node[tool,right=2mm of t1] (t2) {Video tools\\ frames, motion};
+\node[tool,right=2mm of t2] (t3) {Detection\\ YOLO + guidance};
+\node[tool,right=2mm of t3] (t4) {OCR and speech\\ Tesseract, espeak-ng};
+\node[tool,right=2mm of t4] (t5) {Scene VLM\\ optional};
+\node[box,minimum width=14.6cm,below=9mm of t3] (res) {Results: annotated images $\cdot$ JSON reports $\cdot$ WAV audio $\cdot$ agent log};
+\draw[arr] (user) -- (ctrl);
+\draw[arr,<->] (ctrl) -- (llm);
+\draw[arr] (ctrl.south) -- ++(0,-3mm) -| (t3.north);
+\foreach \t in {t1,t2,t4,t5} {\draw[arr] (ctrl.south) ++(0,-3mm) -| (\t.north);}
+\foreach \t in {t1,t2,t3,t4,t5} {\draw[arr] (\t.south) -- ++(0,-4mm) -| (res.north);}
+\end{tikzpicture}
+\caption{Logical architecture of NetraAI. Only functions in the allow-list can be executed.}
+\label{fig:arch}
+\end{figure}
+
+\section{Why a local, open-source stack?}
+A local system keeps camera frames on the user's computer, avoids recurring service cost, works offline after the
+initial downloads, and is reproducible because algorithms, parameters and versions can be recorded.
+``Free and open source'' needs a qualification: a library may be open source while a particular \emph{model weight},
+dataset, or commercial deployment has additional conditions. This matters here because the detector used in this tutorial
+is distributed under a licence with obligations for distribution and network use (Chapter~\ref{ch:detect}).
+Always read the licence of the exact version you ship.
+
+\section{What you will build}
+The companion repository has the following layout. Every listing in this document is included directly from these files.
+\begin{lstlisting}[style=plain]
+netra-ai/
+|-- netra/
+|   |-- common.py        safe paths, limits, image I/O
+|   |-- image_tools.py   quality, enhancement, filters, edges, segmentation
+|   |-- video_tools.py   metadata, frame sampling, motion detection
+|   |-- spatial.py       zones, proximity, guidance sentence, throttle
+|   |-- detection.py     YOLO inference, annotated output, video timeline
+|   |-- ocr_tools.py     Tesseract text reading
+|   |-- speech.py        espeak-ng text-to-speech to WAV
+|   |-- vision_tools.py  vision-language scene description
+|   |-- metrics.py       PSNR, SSIM, IoU, precision/recall, low-light simulator
+|   |-- pipeline.py      assess -> enhance -> detect -> speak
+|   |-- agent.py         allow-listed tool-calling loop
+|   `-- live.py          webcam / video-file guidance loop
+|-- app.py               Streamlit interface
+|-- tests/               pytest suite
+|-- scripts/             setup_ubuntu.sh, run_lowlight_experiment.py
+|-- docs/                this tutorial (LaTeX source and PDF)
+`-- README.md, LICENSE, requirements*.txt, .gitignore, .github/workflows/ci.yml
+\end{lstlisting}
+
+\begin{notebox}[Validation status of the companion code]
+The image tools, video tools, spatial guidance, metrics, tool schemas, allow-list behaviour and the detection
+post-processing (with a stand-in model) are covered by an automated test suite that passes (20 tests). The low-light
+experiment in Chapter~\ref{ch:experiments} was actually run and its numbers are reported as measured.
+\textbf{Not exercised when this tutorial was prepared:} real YOLO inference, tool calling against a live Ollama model,
+Tesseract and espeak-ng output, webcam capture, and Raspberry Pi deployment. Treat those parts as a checklist to verify on
+your own machine and record your results (Chapter~\ref{ch:eval}).
+\end{notebox}
+
+% =====================================================================
+\chapter{Software Stack and Responsibilities}
+% =====================================================================
+\begin{table}[ht]
+\centering\small
+\begin{tabular}{@{}p{3.1cm}p{3.6cm}p{8.2cm}@{}}
+\toprule
+\textbf{Component} & \textbf{Software} & \textbf{Purpose}\\
+\midrule
+Operating system & Ubuntu 24.04 LTS (native or WSL2) & Development and execution platform.\\
+Language & Python 3 & Tool functions, agent controller, tests.\\
+Model runtime & Ollama & Runs LLMs locally and exposes an HTTP API with tool calling.\\
+Language model & Llama or Qwen family & Interprets requests and chooses tools.\\
+Computer vision & OpenCV (headless build) & I/O, colour conversion, CLAHE, filters, edges, contours, background subtraction.\\
+Analysis & NumPy, scikit-image & Array maths, PSNR and SSIM.\\
+Plots & Matplotlib & Histograms and experiment figures.\\
+Detection & Ultralytics YOLO (nano model) & Object classes and bounding boxes.\\
+Text reading & Tesseract OCR & Printed text, including Indian-language packs.\\
+Speech & espeak-ng & Offline text-to-speech to WAV.\\
+Video & FFmpeg & Decoding, encoding, standard conversions.\\
+Interface & Streamlit & Local browser interface.\\
+Quality & pytest, GitHub Actions & Regression tests and continuous integration.\\
+Publishing & Git, GitHub & Version control and sharing.\\
+\bottomrule
+\end{tabular}
+\caption{Components and their roles.}
+\end{table}
+
+\paragraph{OpenCV.} The workhorse for conventional computer vision. This tutorial uses \code{imread}, \code{imwrite},
+\code{cvtColor}, \code{createCLAHE}, \code{LUT}, \code{medianBlur}, \code{GaussianBlur}, \code{bilateralFilter},
+\code{Canny}, \code{threshold}, \code{Laplacian}, \code{VideoCapture}, \code{VideoWriter} and
+\code{createBackgroundSubtractorMOG2}. The \emph{headless} wheel (\code{opencv-python-headless}) is used because it has no GUI dependencies,
+which avoids the shared-library errors that the standard wheel can produce on servers and in WSL.
+
+\paragraph{FFmpeg.} Better than OpenCV for standard media transformations (resize, trim, re-encode) and for timestamp-accurate work.
+OpenCV is convenient when you need custom frame-by-frame algorithms.
+
+\paragraph{Ollama.} Provides a local model runtime and an HTTP API. The agent sends a prompt and a list of tools; the model may answer with a
+tool call; the Python controller validates and executes it, then returns the result to the model.
+
+\paragraph{YOLO, Tesseract, espeak-ng.} These are the three assistive components: \emph{what} is in the frame, \emph{what the text says}, and \emph{how to say it aloud}.
+
+% =====================================================================
+\chapter{Ubuntu Development Environment}
+% =====================================================================
+This chapter targets Ubuntu 24.04 LTS, either installed natively or running under Windows through WSL2. Ubuntu-specific steps are the same in both.
+
+\section{Windows users: install WSL2 with Ubuntu}
+In an administrator PowerShell window:
+\begin{lstlisting}[style=sh]
+wsl --install -d Ubuntu-24.04
+\end{lstlisting}
+\begin{itemize}
+  \item \code{wsl --install} enables the WSL features and installs a Linux distribution; \code{-d} selects the distribution.
+  \item Restart if asked, then create a Linux username and password in the Ubuntu window that opens.
+\end{itemize}
+Verify and update:
+\begin{lstlisting}[style=sh]
+wsl -l -v
+wsl --update
+\end{lstlisting}
+\code{-l -v} lists installed distributions with their WSL version; the Ubuntu entry should show version 2.
+
+\begin{notebox}[WSL practicalities]
+\begin{itemize}
+  \item \textbf{Work inside the Linux filesystem} (\code{~/}), not under \code{/mnt/c/}. File access across the boundary is much slower, which hurts video processing.
+  \item \textbf{systemd.} Ollama's installer sets up a service. On recent WSL, Ubuntu enables systemd by default; if \code{systemctl status} reports that it is not running, add \code{[boot]} and \code{systemd=true} to \code{/etc/wsl.conf}, then run \code{wsl --shutdown} from PowerShell and reopen Ubuntu.
+  \item \textbf{GPU.} Install the NVIDIA driver on Windows (not inside Ubuntu); CUDA-enabled tools in WSL use it. Check with \code{nvidia-smi} inside Ubuntu. CPU is enough for this tutorial.
+  \item \textbf{Audio.} WSLg normally provides audio. Play a generated WAV with \code{paplay file.wav} after installing \code{pulseaudio-utils}.
+  \item \textbf{Webcam.} A USB camera can be forwarded with \code{usbipd-win}, but the default WSL kernel may lack camera (UVC) drivers. The simplest route is to develop with recorded video files in WSL and run the live camera loop on native Ubuntu or the Raspberry Pi. Check Microsoft's current WSL documentation before investing time here.
+\end{itemize}
+\end{notebox}
+
+\section{Update package information}
+\begin{lstlisting}[style=sh]
+sudo apt update
+sudo apt upgrade -y
+\end{lstlisting}
+\code{sudo} runs a command as administrator; \code{apt} is Ubuntu's package manager; \code{update} refreshes the package index; \code{upgrade} installs newer versions of installed packages; \code{-y} answers yes to prompts (review changes first on a production machine).
+
+\section{Install system dependencies}
+\begin{lstlisting}[style=sh]
+sudo apt install -y python3 python3-pip python3-venv python3-dev \
+    build-essential git curl wget ffmpeg \
+    tesseract-ocr tesseract-ocr-tel tesseract-ocr-hin espeak-ng
+\end{lstlisting}
+The trailing backslash continues the command on the next line.
+\begin{description}[leftmargin=3.2cm,style=nextline,font=\ttfamily\small]
+  \item[python3, -pip, -venv, -dev] Interpreter, package installer, virtual environments, and headers for compiled extensions.
+  \item[build-essential] Compiler and build tools used by some Python packages.
+  \item[git, curl, wget] Version control and download tools (curl is also used by the Ollama installer).
+  \item[ffmpeg] Multimedia decoding and encoding.
+  \item[tesseract-ocr] The OCR engine; \code{-tel} and \code{-hin} add Telugu and Hindi language data, which are useful for signs and labels in India.
+  \item[espeak-ng] Offline speech synthesis with many languages and voices.
+\end{description}
+The same list is automated in \code{scripts/setup_ubuntu.sh}.
+
+\section{Verify the installations}
+\begin{lstlisting}[style=sh]
+python3 --version
+ffmpeg -version
+git --version
+tesseract --list-langs
+espeak-ng --version
+\end{lstlisting}
+Each prints a version or list. Recording versions is part of reproducible research.
+
+\section{Get the project}
+Either clone the finished repository, or create the structure yourself.
+\begin{lstlisting}[style=sh]
+git clone https://github.com/<your-user>/netra-ai.git
+cd netra-ai
+mkdir -p input/images input/videos output models
+\end{lstlisting}
+\code{mkdir -p} creates directories and any missing parents without error if they exist. \code{input/} holds source media, \code{output/} holds everything generated; keeping them separate preserves originals and makes the workflow auditable.
+
+\section{Create and activate a virtual environment}
+\begin{lstlisting}[style=sh]
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip setuptools wheel
+\end{lstlisting}
+\code{-m venv} runs Python's environment module and creates the isolated \code{.venv} directory. \code{source} runs the activation script in the current shell so that \code{python} and \code{pip} refer to the environment; the prompt gains a \code{(.venv)} prefix. \code{python -m pip} guarantees that pip belongs to the active interpreter. Leave the environment with \code{deactivate}.
+
+\section{Install Python libraries}
+\begin{lstlisting}[style=plain,caption={requirements.txt}]
+numpy
+opencv-python-headless
+scikit-image
+matplotlib
+pillow
+pandas
+pytesseract
+ollama
+streamlit
+pytest
+\end{lstlisting}
+\begin{lstlisting}[style=sh]
+pip install -r requirements.txt
+\end{lstlisting}
+\code{-r} reads package names from a file. After the first successful install, record exact versions with \code{pip freeze > requirements.lock.txt} for reproducibility.
+
+\begin{warnbox}
+Install \emph{only one} OpenCV wheel variant (\code{opencv-python}, \code{opencv-python-headless} or \code{opencv-contrib-python}) in an environment. Mixing them causes confusing import errors.
+\end{warnbox}
+
+\section{Run the test suite}
+\begin{lstlisting}[style=sh]
+python -m pytest -q
+\end{lstlisting}
+\code{-q} gives compact output. All tests should pass before you continue. They use a temporary project directory (set through the \code{NETRA_HOME} environment variable in \code{tests/conftest.py}), so they never touch your real images.
+
+% =====================================================================
+\chapter{Installing and Configuring Ollama}
+% =====================================================================
+\section{Install Ollama}
+\begin{lstlisting}[style=sh]
+curl -fsSL https://ollama.com/install.sh | sh
+\end{lstlisting}
+\begin{itemize}
+  \item \code{-f} fail on HTTP errors; \code{-s} silence the progress meter; \code{-S} still show errors; \code{-L} follow redirects.
+  \item The pipe \code{|} sends the downloaded script to \code{sh}, which executes it.
+\end{itemize}
+This runs a remote script. On a managed or security-sensitive computer, download it first, read it, and follow the official installation documentation. Verify with \code{ollama --version}.
+
+\section{Check the service}
+\begin{lstlisting}[style=sh]
+systemctl status ollama
+sudo systemctl start ollama
+sudo systemctl enable ollama
+\end{lstlisting}
+\code{status} shows whether the service is active; \code{start} starts it now; \code{enable} starts it at boot. The API listens on port 11434. Do not expose this port to an untrusted network.
+
+\section{Download a language model}
+\begin{lstlisting}[style=sh]
+ollama pull llama3.1:8b
+\end{lstlisting}
+\code{pull} downloads the named model; \code{8b} is the approximate parameter count. Memory needs depend on quantisation and context length. Pick one model first. An alternative is \code{qwen3:8b}. Check the model's licence and tool-calling capability before institutional or commercial use. To use another model without editing code, set an environment variable:
+\begin{lstlisting}[style=sh]
+export NETRA_LLM="qwen3:8b"
+\end{lstlisting}
+
+\section{Test the model and the API}
+\begin{lstlisting}[style=sh]
+ollama run llama3.1:8b
+curl http://localhost:11434/api/tags
+\end{lstlisting}
+\code{run} opens an interactive session (leave with \code{/bye}); the \code{/api/tags} endpoint returns the locally available models as JSON. A minimal Python check:
+\begin{lstlisting}[style=py]
+from ollama import chat
+reply = chat(model="llama3.1:8b",
+             messages=[{"role": "user", "content": "Explain CLAHE in two sentences."}])
+print(reply.message.content)
+\end{lstlisting}
+The model name must match one that is installed locally.

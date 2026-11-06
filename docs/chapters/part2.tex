@@ -1,0 +1,245 @@
+% =====================================================================
+\chapter{Image-Processing Tools}
+% =====================================================================
+Every tool is a plain Python function that validates its input, performs one operation, saves a \emph{new} file and returns a small dictionary. Small, single-purpose functions are easy for a language model to choose between and easy for you to test.
+
+\section{Shared helpers: safe paths and limits}
+\lstinputlisting[style=py,caption={\texttt{netra/common.py}},label=lst:common]{../netra/common.py}
+\begin{itemize}
+  \item \code{BASE} is the project root, overridable with \code{NETRA_HOME}. Tests use that override.
+  \item \code{safe_path} rejects anything that is not a plain filename. A model could emit \code{../../etc/passwd}; \code{Path(filename).name != filename} stops path traversal. It also restricts extensions and checks existence.
+  \item \code{load_image} decodes with OpenCV (colour images arrive in \textbf{BGR} order, not RGB), refuses oversized images, and fails loudly on undecodable files rather than returning \code{None}.
+  \item \code{save_image} checks the Boolean returned by \code{imwrite}; an agent must not report success for a failed save.
+  \item \code{rel} returns project-relative paths so results stay readable and do not leak absolute locations.
+\end{itemize}
+
+\section{Image quality assessment}
+Before enhancing anything, measure. For an 8-bit grayscale image $I$ of $N$ pixels, the tool computes the mean $\mu$, standard deviation $\sigma$, the entropy of the normalised histogram $p(k)$, and a sharpness score:
+\[
+H = -\sum_{k=0}^{255} p(k)\log_2 p(k), \qquad
+S = \operatorname{Var}\!\big(\nabla^2 I\big),
+\]
+where $\nabla^2$ is the Laplacian. A sharp image has strong second derivatives at edges, so $S$ is large; a blurred image has small $S$. The brightness rule flags \code{low_light} when $\mu<80$ and \code{overexposed} when $\mu>180$; \code{low_contrast} when $\sigma<35$; \code{possibly_blurry} when $S<100$.
+
+\begin{warnbox}[Heuristics, not truths]
+These thresholds are starting points. $S$ depends on image resolution and scene content (a plain wall is ``blurry'' by this measure). Tune all four on frames from your own camera, and keep the \code{note} field in the tool result so the model does not overstate certainty.
+\end{warnbox}
+
+\section{Enhancement: CLAHE on lightness, then gamma}
+Global histogram equalization maps intensities through the cumulative distribution:
+\[
+s_k = (L-1)\sum_{j=0}^{k} p_r(r_j), \qquad L=256.
+\]
+It is simple but can over-amplify noise and wash out scenes with both dark and bright regions. \emph{Contrast Limited Adaptive Histogram Equalization} (CLAHE) works on small tiles and clips each tile's histogram at a limit, which restrains noise amplification.
+
+Applying CLAHE to B, G and R separately shifts colours. The tool instead converts to the CIE \textbf{LAB} space, applies CLAHE to the lightness channel $L$ only, and leaves the colour channels $a,b$ untouched. A \emph{gamma} correction then brightens or darkens through a lookup table:
+\[
+L_{\text{out}} = 255\left(\frac{L_{\text{in}}}{255}\right)^{1/\gamma}.
+\]
+With $\gamma>1$ the image brightens; with $\gamma<1$ it darkens. The agent should report \code{clip_limit}, \code{tile_grid} and \code{gamma} so an experiment can be reproduced.
+
+\section{Filtering, sharpening, edges and segmentation}
+\begin{itemize}
+  \item \textbf{Median} filter replaces each pixel by the median of its neighbourhood, $g(x,y)=\operatorname{median}\{f(s,t):(s,t)\in S_{xy}\}$. It suppresses isolated extreme values (salt-and-pepper noise) and preserves edges better than a linear blur.
+  \item \textbf{Gaussian} filter convolves with $G(x,y)=\frac{1}{2\pi\sigma^2}\exp\!\left(-\frac{x^2+y^2}{2\sigma^2}\right)$. It suits roughly Gaussian sensor noise but blurs edges. Kernel sizes must be odd so that the kernel has a centre pixel.
+  \item \textbf{Bilateral} filter weights neighbours by spatial \emph{and} intensity distance, smoothing flat regions while keeping edges.
+  \item \textbf{Unsharp mask} sharpens with $I_{\text{out}}=(1+a)I-a\,G_\sigma{*}I$, where $a$ is the amount.
+  \item \textbf{Canny} edges: smoothing, gradient estimation, non-maximum suppression, double thresholding and hysteresis.
+  \item \textbf{Otsu} thresholding chooses the global threshold that maximises between-class variance, so no manual value is needed; uneven illumination still defeats global thresholds.
+\end{itemize}
+
+\lstinputlisting[style=py,caption={\texttt{netra/image\_tools.py}},label=lst:imagetools]{../netra/image_tools.py}
+
+\paragraph{Reading the code.}
+\begin{itemize}
+  \item Each public function has a one-line summary and an \code{Args:} block. The Ollama Python client converts type annotations and these docstrings into the tool description sent to the model, so the docstring is part of the interface, not decoration.
+  \item Argument ranges are checked \emph{inside} the tool. Never rely on the model to respect ranges.
+  \item \code{matplotlib.use("Agg")} selects a non-interactive backend so plotting works without a display (WSL, servers, CI). \code{plt.close(fig)} releases memory in long-running agents.
+  \item Output names are prefixed (\code{enhanced_}, \code{median_}, \dots) so originals are never overwritten.
+\end{itemize}
+
+\section{Further OpenCV operations}
+\begin{table}[ht]\centering\small
+\begin{tabular}{@{}lll@{}}\toprule
+\textbf{Operation} & \textbf{Function} & \textbf{Use}\\\midrule
+Sobel / Laplacian & \code{cv2.Sobel}, \code{cv2.Laplacian} & Gradient and second-derivative edge maps.\\
+Erosion / dilation & \code{cv2.erode}, \code{cv2.dilate} & Shrink or grow foreground regions.\\
+Opening / closing & \code{cv2.morphologyEx} & Remove specks or fill small gaps.\\
+Contours & \code{cv2.findContours} & Boundaries of binary regions.\\
+Hough transform & \code{cv2.HoughLines}, \code{cv2.HoughCircles} & Lines (kerbs, crossings) and circles.\\
+Watershed & \code{cv2.watershed} & Separate touching objects from markers.\\
+\bottomrule\end{tabular}
+\end{table}
+
+% =====================================================================
+\chapter{Video-Processing Tools}
+% =====================================================================
+\section{Properties, sampling and motion}
+For $N_f$ frames at $f$ frames per second the nominal duration is $T=N_f/f$. This depends on container metadata and is unreliable for variable-frame-rate video; use FFmpeg or timestamp-aware decoding when precision matters.
+
+To sample one frame every $\Delta t$ seconds, the code keeps every $\lceil f\,\Delta t\rfloor$-th frame (\code{round(fps * interval)}).
+
+Motion detection uses \emph{MOG2} background subtraction, which models each pixel as a mixture of Gaussians and flags pixels that do not fit the learned background. Its mask labels shadows with the value 127, so the code thresholds at 200 to discard them, applies a morphological opening to remove specks, and keeps only regions larger than \code{min_area_fraction} of the frame.
+
+\begin{warnbox}[Camera motion]
+Background subtraction assumes a \emph{still} camera. On a head-mounted or walking camera the whole scene moves, so almost every pixel is flagged. Use motion detection here as a baseline for static-camera clips (for example a fixed camera at a crossing), and use the object detector for wearable footage.
+\end{warnbox}
+
+\lstinputlisting[style=py,caption={\texttt{netra/video\_tools.py}},label=lst:video]{../netra/video_tools.py}
+
+\section{FFmpeg from the terminal}
+\begin{lstlisting}[style=sh]
+ffmpeg -i walk.mp4 -vf fps=1 frame_%04d.jpg          # one frame per second
+ffmpeg -i walk.mp4 -vf scale=640:-2 walk_640.mp4     # resize, keep aspect ratio
+ffmpeg -ss 00:00:10 -i walk.mp4 -t 10 clip.mp4       # 10 s starting at 10 s
+ffmpeg -i walk.mp4 -vf format=gray walk_gray.mp4     # grayscale
+\end{lstlisting}
+\code{-i} names the input; \code{-vf} applies a video filter; \code{fps=1} samples one frame per second; \code{scale=640:-2} sets the width to 640 and picks an even height that preserves the aspect ratio; \code{-ss} seeks; \code{-t} limits the duration. When calling FFmpeg from Python, use \code{subprocess.run([...])} with a list of arguments and validated paths. Never pass model-generated text to a shell.
+
+% =====================================================================
+\chapter{The Assistive Layer: Detection, Guidance, Text and Speech}
+\label{ch:detect}
+% =====================================================================
+\section{From detections to guidance}
+An object detector returns class labels, confidences and pixel boxes. A blind user needs a short sentence: \emph{what}, \emph{which side}, and \emph{how close}. The module \code{spatial.py} is deliberately free of OpenCV and model code. It is pure Python, so it is fast to test and portable to constrained devices.
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[x=1cm,y=1cm]
+  \draw[ink,thick,fill=paper] (0,0) rectangle (12,6.2);
+  \draw[dashed,ink!60] (4,0) -- (4,6.2);
+  \draw[dashed,ink!60] (8,0) -- (8,6.2);
+  \node[ink,font=\small\bfseries] at (2,5.8) {left};
+  \node[ink,font=\small\bfseries] at (6,5.8) {center};
+  \node[ink,font=\small\bfseries] at (10,5.8) {right};
+  \draw[saffron,very thick] (4.6,0.4) rectangle (7.4,5.0);
+  \node[saffron!70!black,font=\footnotesize,align=center] at (6,2.7) {person\\ $\approx$ 26\% of frame\\ ``very close''};
+  \draw[teal,very thick] (0.6,1.0) rectangle (2.3,2.4);
+  \node[teal!70!black,font=\footnotesize,align=center] at (1.45,1.7) {chair\\ ``far''};
+  \node[codegray,font=\scriptsize] at (6,-0.4) {Illustrative layout, not model output. Zone = box centre; proximity = box area $\div$ frame area.};
+\end{tikzpicture}
+\caption{Guidance logic: thirds of the frame give the side; the fraction of the frame covered by the box gives a coarse proximity class.}
+\end{figure}
+
+\subsection{The rules}
+\begin{itemize}
+  \item \textbf{Zone.} Let $c_x=(x_1+x_2)/(2W)$. Left if $c_x<1/3$, right if $c_x>2/3$, otherwise centre.
+  \item \textbf{Proximity.} Let $r=\dfrac{(x_2-x_1)(y_2-y_1)}{WH}$. ``Very close'' if $r\ge0.30$, ``close'' if $r\ge0.08$, otherwise ``far''.
+  \item \textbf{Ranking.} Sort by proximity, then hazard classes (person, vehicles, bicycle, dog, \dots), then centre before sides, then confidence. Speak at most three items.
+  \item \textbf{No false reassurance.} With no detections the sentence is ``No known objects detected. This does not mean the way is clear.''
+\end{itemize}
+\begin{warnbox}[Monocular distance is crude]
+Box area is a poor distance estimate: a bus far away and a chair nearby can cover the same fraction of the frame. The thresholds above are placeholders for a demonstration. For real use, calibrate against tape-measured distances per class (Chapter~\ref{ch:eval}), restrict claims to the classes you calibrated, or add a depth sensor (stereo camera, ToF, or ultrasonic).
+\end{warnbox}
+
+\lstinputlisting[style=py,caption={\texttt{netra/spatial.py}},label=lst:spatial]{../netra/spatial.py}
+The \code{GuidanceThrottle} class prevents the system from repeating the same sentence every frame. It speaks when the message \emph{changes} (after a minimum gap) or when a repeat interval has passed, and takes an injectable clock so the unit test needs no real waiting.
+
+\section{Object detection with a small YOLO model}
+Install the optional dependency (this pulls in PyTorch and is a large download):
+\begin{lstlisting}[style=sh]
+pip install -r requirements-detect.txt
+\end{lstlisting}
+The code loads \code{models/yolo11n.pt} if it exists; otherwise it asks Ultralytics for \code{yolo11n.pt}, which is downloaded into the current directory on first use (move it into \code{models/} afterwards). Verify the current model names and download behaviour in the Ultralytics documentation; they change between releases. ``Nano'' models trade accuracy for speed, which suits edge devices.
+
+\begin{warnbox}[Licensing]
+Ultralytics software and weights are offered under the AGPL-3.0 licence or a separate commercial licence. The AGPL carries obligations for distribution and for network use. If you plan to distribute a product, read the current terms at the Ultralytics licence page and consider alternatives with permissive licences, or the commercial option.
+\end{warnbox}
+
+\lstinputlisting[style=py,caption={\texttt{netra/detection.py}},label=lst:detection]{../netra/detection.py}
+
+\paragraph{Reading the code.}
+\begin{itemize}
+  \item \code{_get_model} loads the model lazily, so importing the agent does not require PyTorch.
+  \item \code{detect_frame} works on an in-memory frame, which is what a live camera loop needs; \code{detect_objects} wraps it for files and writes an annotated copy.
+  \item \code{guide_video} samples a video, builds guidance per sample, records only \emph{changes} in the sentence, and saves a JSON timeline. It also records per-frame latency, which feeds the evaluation in Chapter~\ref{ch:eval}.
+  \item \code{benchmark_detector} performs a warm-up run before timing, because the first inference includes model loading and allocation.
+  \item A confidence score is a model score, not a probability that the detection is correct.
+\end{itemize}
+
+\paragraph{Tracking (extension).} Detection answers ``what is in this frame''; tracking asks ``which detection corresponds to an object seen earlier''. Ultralytics provides \code{model.track(source=..., tracker="bytetrack.yaml")}. Tracking lets you say ``approaching'' by watching a box grow across frames, but identities can switch or vanish under occlusion, so treat them as estimates.
+
+\section{Reading printed text}
+OCR converts text in an image to characters. The tool upsamples small images, smooths slightly, binarises with Otsu's method, then calls Tesseract, which returns per-word confidences. Language codes follow Tesseract's three-letter convention (\code{eng}, \code{tel}, \code{hin}) and can be combined with \code{+}. Install language packs with \code{apt}, as in Chapter~3.
+\lstinputlisting[style=py,caption={\texttt{netra/ocr\_tools.py}},label=lst:ocr]{../netra/ocr_tools.py}
+Mean confidence is not accuracy. For safety-critical text such as medicine dosage, the system should tell the user that reading is uncertain and suggest human verification.
+
+\section{Speech output}
+\lstinputlisting[style=py,caption={\texttt{netra/speech.py}},label=lst:speech]{../netra/speech.py}
+The text is passed on \emph{standard input} (\code{--stdin}) rather than as a command-line argument, so text beginning with a dash cannot be misread as an option, and the command is built as a list so no shell is involved. The file name is a hash of the voice, rate and text, so repeated phrases reuse the same WAV. Voices such as \code{te} (Telugu) and \code{hi} (Hindi) exist in espeak-ng; judge their intelligibility with real users before relying on them. Neural voices such as Piper may sound more natural; they are also open source but add model downloads.
+
+\section{Scene description with a vision-language model}
+A text-only LLM cannot see pixels. A vision-language model (VLM) accepts an image plus a question. Download one with \code{ollama pull llama3.2-vision} (large; check memory needs) and choose another with \code{NETRA_VISION}.
+\lstinputlisting[style=py,caption={\texttt{netra/vision\_tools.py}},label=lst:vlm]{../netra/vision_tools.py}
+The prompt tells the model to say ``unclear'' rather than guess and never to say a path is safe. A VLM \emph{describes}; it does not \emph{measure}. If the user needs exact positions, use detection; if they need exact text, use OCR.
+
+\section{A deterministic pipeline}
+Figure~\ref{fig:pipeline} shows \code{navigation_assist}. Because the steps are fixed, it is reproducible and does not depend on the LLM choosing correctly, which is how you would deploy the safety-relevant path on a device.
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[node distance=5mm,
+  st/.style={draw=ink,rounded corners=2pt,fill=ink!6,font=\small,align=center,minimum height=9mm,minimum width=2.2cm},
+  dec/.style={draw=saffron,diamond,aspect=2.2,fill=saffron!10,font=\footnotesize,align=center,inner sep=1pt},
+  arr/.style={-{Latex[length=2mm]},thick,ink}]
+\node[st] (a) {Assess\\ quality};
+\node[dec,right=of a] (d) {low light or\\ low contrast?};
+\node[st,right=14mm of d] (e) {Enhance\\ (CLAHE, gamma)};
+\node[st,below=8mm of d] (f) {Detect\\ objects};
+\node[st,right=of f] (g) {Build\\ guidance};
+\node[st,right=of g] (h) {Speak\\ (WAV)};
+\draw[arr] (a)--(d);
+\draw[arr] (d)--node[above,font=\scriptsize]{yes}(e);
+\draw[arr] (e)|-(f);
+\draw[arr] (d)--node[left,font=\scriptsize]{no}(f);
+\draw[arr] (f)--(g); \draw[arr] (g)--(h);
+\end{tikzpicture}
+\caption{The \code{navigation_assist} pipeline.}
+\label{fig:pipeline}
+\end{figure}
+\lstinputlisting[style=py,caption={\texttt{netra/pipeline.py}},label=lst:pipeline]{../netra/pipeline.py}
+
+% =====================================================================
+\chapter{Connecting the Tools to the AI Agent}
+% =====================================================================
+\section{Function calling}
+The model receives the user request, a system instruction and the \emph{schemas} of approved functions. For ``Enhance \code{hallway.png} with moderate brightening'' it may return a tool call such as \code{enhance_low_light(filename="hallway.png", gamma=1.8)}. \textbf{The Python program, not the model, executes it}, then returns the result so the model can explain what happened.
+
+\section{The agent controller}
+\lstinputlisting[style=py,caption={\texttt{netra/agent.py}},label=lst:agent]{../netra/agent.py}
+
+\paragraph{How it works.}
+\begin{enumerate}
+  \item \code{TOOLS} is the allow-list. \code{TOOL_MAP} looks tools up by name. An unknown name is rejected and reported; the model cannot invoke anything else.
+  \item \code{execute_tool} \emph{never raises}. Exceptions become \texttt{\{"error": \ldots\}} so the model can read what went wrong and correct its arguments.
+  \item \code{_verify} checks that a file a tool claims to have written actually exists, implementing the rule ``verify the output, do not trust the explanation''.
+  \item \code{run_query} is a \emph{bounded} loop: at most \code{MAX_ROUNDS} model calls per request, so a confused model cannot loop forever. Several tool calls in one reply are handled in order. This supports multi-step requests such as ``enhance, then detect''.
+  \item Every call is appended to \code{output/reports/agent_log.jsonl} with time, tool, arguments, status and model name.
+  \item The system prompt forbids claiming unperformed actions, inventing filenames or measurements, and declaring an area safe.
+\end{enumerate}
+\begin{notebox}[Client-version caveat]
+The exact message format for tool results can change between Ollama client versions (for example, whether tool messages carry a call identifier). The code was checked only to the extent that all 22 functions convert into valid tool schemas with the \code{ollama} Python package. Test the full loop against your installed version and the official tool-calling documentation.
+\end{notebox}
+
+\section{Run the agent}
+\begin{lstlisting}[style=sh]
+cd ~/netra-ai
+source .venv/bin/activate
+python -m netra.agent
+\end{lstlisting}
+\code{-m} runs a module using package-aware imports, which is why you start from the project root. Example session (wording will vary by model):
+\begin{lstlisting}[style=plain]
+You: Is hallway.png too dark? Enhance it if so.
+NetraAI: I assessed hallway.png (mean intensity 54, flagged low_light) and
+ran enhance_low_light with clip_limit 2.0, tile_grid 8, gamma 1.8. The result
+is saved at output/images/enhanced_hallway.png.
+\end{lstlisting}
+Always open the output file; do not rely only on the model's description of it.
+
+\section{Hardening checklist}
+\begin{itemize}
+  \item Strict validation of every argument inside each tool (done) and image-size and video-length limits (done).
+  \item Per-tool timeouts and cancellation for long videos (not yet implemented).
+  \item Unique output names or run identifiers so repeated runs do not overwrite each other.
+  \item Confirmation before overwriting or deleting anything.
+  \item Never use \code{eval}, \code{exec} or a shell on model-generated text.
+\end{itemize}

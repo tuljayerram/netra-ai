@@ -1,0 +1,2 @@
+# Heavy optional dependency (installs PyTorch). Check the Ultralytics licence first.
+ultralytics

@@ -1,0 +1,10 @@
+numpy
+opencv-python-headless
+scikit-image
+matplotlib
+pillow
+pandas
+pytesseract
+ollama
+streamlit
+pytest

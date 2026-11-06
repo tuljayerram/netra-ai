@@ -1,0 +1,29 @@
+# environments and caches
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ipynb_checkpoints/
+
+# data and generated results (never commit personal images or video)
+input/
+output/
+*.wav
+
+# model weights (download with scripts/setup_ubuntu.sh or let Ultralytics fetch them)
+models/*
+!models/.gitkeep
+*.pt
+*.onnx
+*.tflite
+
+# LaTeX build files
+docs/*.aux
+docs/*.log
+docs/*.out
+docs/*.toc
+docs/*.lof
+docs/*.lot
+docs/*.fls
+docs/*.fdb_latexmk
+docs/*.synctex.gz
